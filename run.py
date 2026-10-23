@@ -85,7 +85,7 @@ if __name__ == '__main__':
                         help='the length of segmen-wise iteration of SegRNN')
 
     # optimization
-    parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
+    parser.add_argument('--num_workers', type=int, default=0, help='data loader num workers')
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
     parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
     parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
@@ -175,6 +175,12 @@ if __name__ == '__main__':
 
     print('Args in experiment:')
     print_args(args)
+
+    # ---- 诊断：打印关键维度 ----
+    print(f'>>> DEBUG: args.enc_in = {args.enc_in}, '
+          f'args.dec_in = {args.dec_in}, '
+          f'args.c_out = {args.c_out}, '
+          f'args.features = {args.features}')
 
 
     if args.task_name == 'long_term_forecast':

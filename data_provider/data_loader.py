@@ -848,3 +848,190 @@ class UEAloader(Dataset):
 
     def __len__(self):
         return len(self.all_IDs)
+
+class Dataset_MultiStock(Dataset):
+    """
+    多股票面板数据加载器。
+    返回:
+      - train/val: (x, y, x_mark, y_mark) 4 元组
+    """
+
+    def __init__(self, args, root_path, flag='train', size=None,
+                 features='MS', data_path='panel.csv', target='target',
+                 scale=True, timeenc=0, freq='d', seasonal_patterns=None,
+                 stock_code_col='stock_code', window_stride=1,
+                 train_ratio=0.7, vali_ratio=0.1):
+        self.args = args
+        if size is None:
+            self.seq_len = 60
+            self.label_len = 0
+            self.pred_len = 1
+        else:
+            self.seq_len = size[0]
+            self.label_len = size[1]
+            self.pred_len = size[2]
+
+        assert flag in ['train', 'val', 'test']
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.timeenc = timeenc
+        self.freq = freq
+        self.root_path = root_path
+        self.data_path = data_path
+        self.stock_code_col = stock_code_col
+        self.window_stride = window_stride
+        self.train_ratio = train_ratio
+        self.vali_ratio = vali_ratio
+
+        if self.label_len > 0:
+            raise ValueError(
+                f"Dataset_MultiStock 只支持 label_len=0，当前 label_len={self.label_len}。"
+            )
+
+        self.__read_data__()
+
+    def __read_data__(self):
+        self.scaler = StandardScaler()
+        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+
+        all_cols = list(df_raw.columns)
+        assert 'date' in all_cols
+        assert self.stock_code_col in all_cols
+        assert self.target in all_cols
+
+        feature_cols = [c for c in all_cols
+                        if c not in ('date', self.stock_code_col, self.target)]
+        self.feature_cols = feature_cols
+        self.n_features = len(feature_cols)
+
+        self.scale_cols = [c for c in feature_cols]   # 全部特征标准化
+
+        # target 也纳入标准化（独立计算均值/方差）
+        self.target_mean = None
+        self.target_std = None
+
+        df_raw['date'] = pd.to_datetime(df_raw['date'])
+        groups = df_raw.groupby(self.stock_code_col, sort=False)
+
+        all_codes = sorted(df_raw[self.stock_code_col].unique())
+        self.code_to_id = {code: i for i, code in enumerate(all_codes)}
+
+        stock_splits = []
+        for code, gdf in groups:
+            gdf = gdf.sort_values('date').reset_index(drop=True)
+            n = len(gdf)
+            if n < self.seq_len + 1:
+                continue
+            num_train = int(n * self.train_ratio)
+            num_vali = int(n * self.vali_ratio)
+            if num_train < self.seq_len + 1:
+                continue
+            train_end = num_train
+            vali_end = num_train + num_vali
+            stock_splits.append((code, gdf, train_end, vali_end))
+
+        # ---- 用训练集拟合 scaler ----
+        if self.scale:
+            train_parts = [
+                gdf.iloc[:train_end][self.scale_cols]
+                for _, gdf, train_end, _ in stock_splits
+            ]
+            if train_parts:
+                train_all = pd.concat(train_parts, ignore_index=True)
+                self.scaler.fit(train_all.values)
+            # 用训练集 target 拟合均值和方差
+            train_targets = []
+            for _, gdf, train_end, _ in stock_splits:
+                train_targets.append(gdf.iloc[:train_end][self.target].values)
+            if train_targets:
+                train_targets = np.concatenate(train_targets)
+                self.target_mean = float(train_targets.mean())
+                self.target_std = float(train_targets.std()) + 1e-8
+
+        # ---- 生成样本 ----
+        self.data_x = []
+        self.data_y = []
+        self.data_stamp = []
+        self.data_sid = []
+
+        for code, gdf, train_end, vali_end in stock_splits:
+            sid = self.code_to_id[code]
+            n = len(gdf)
+            if self.set_type == 0:
+                b1, b2 = 0, train_end
+            elif self.set_type == 1:
+                b1, b2 = train_end, vali_end
+            else:
+                b1, b2 = vali_end, n
+
+            sub = gdf.iloc[b1:b2].reset_index(drop=True)
+            if len(sub) < self.seq_len + 1:
+                continue
+
+            # ★ 新增：对 sub 的特征列做标准化
+            if self.scale:
+                sub = sub.copy()
+                sub[self.scale_cols] = self.scaler.transform(
+                    sub[self.scale_cols].values
+                )
+
+            if self.timeenc == 0:
+                stamp = np.zeros((len(sub), 4), dtype=np.float32)
+            else:
+                stamp = time_features(
+                    pd.to_datetime(sub['date'].values), freq=self.freq
+                ).transpose(1, 0).astype(np.float32)
+
+            max_s_end = len(sub) - 1
+            s_begin_list = list(range(0, max_s_end - self.seq_len + 1,
+                                      self.window_stride))
+
+            for s_begin in s_begin_list:
+                s_end = s_begin + self.seq_len
+                y_idx = s_end - 1     # 输入最后一天的索引
+
+                seq_x = sub[self.feature_cols].iloc[s_begin:s_end].values
+                seq_y = sub[[self.target]].iloc[y_idx:y_idx + 1].values
+                if self.target_mean is not None:
+                    seq_y = (seq_y - self.target_mean) / self.target_std
+                seq_x_mark = stamp[s_begin:s_end]
+                seq_y_mark = stamp[y_idx:y_idx + 1]
+
+                self.data_x.append(seq_x)
+                self.data_y.append(seq_y)
+                self.data_stamp.append((seq_x_mark, seq_y_mark))
+                self.data_sid.append(sid)
+
+        self.data_x = np.array(self.data_x, dtype=np.float32)
+        self.data_y = np.array(self.data_y, dtype=np.float32)
+        self.data_sid = np.array(self.data_sid, dtype=np.int64)
+
+        print(f'[Dataset] data_x 均值={self.data_x.mean():.4f}, '
+              f'std={self.data_x.std():.4f}, '
+              f'max={np.abs(self.data_x).max():.2f}')
+        print(f'[Dataset] data_y 均值={self.data_y.mean():.4f}, '
+              f'std={self.data_y.std():.4f}')
+
+    def __getitem__(self, index):
+        seq_x = self.data_x[index]
+        seq_y = self.data_y[index]
+        seq_x_mark, seq_y_mark = self.data_stamp[index]
+
+        # 只有 train 返回 4 元组（train() 循环直接解包 4 个）
+        # val 和 test 都返回 5 元组（vali() 和 test() 都需要 stock_id）
+        if self.set_type == 0:  # train
+            return (seq_x, seq_y, seq_x_mark, seq_y_mark)
+        else:  # val 或 test
+            return (seq_x, seq_y, seq_x_mark, seq_y_mark, self.data_sid[index])
+
+    def __len__(self):
+        return len(self.data_x)
+
+    def inverse_transform(self, data):
+        if self.target_mean is None:
+            return data
+        return data * self.target_std + self.target_mean

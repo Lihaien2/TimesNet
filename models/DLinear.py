@@ -1,110 +1,59 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from layers.Autoformer_EncDec import series_decomp
 
 
 class Model(nn.Module):
     """
-    Paper link: https://arxiv.org/pdf/2205.13504.pdf
+    DLinear 改造版，支持 features='MS'。
+    原版 DLinear 输出 (B, pred_len, enc_in)，只适用于 features='M'。
+    本版本在末端加一个 channel 投影，输出 (B, pred_len, c_out)。
     """
 
-    def __init__(self, configs, individual=False):
-        """
-        individual: Bool, whether shared model among different variates.
-        """
+    def __init__(self, configs):
         super(Model, self).__init__()
         self.task_name = configs.task_name
         self.seq_len = configs.seq_len
-        if self.task_name == 'classification' or self.task_name == 'anomaly_detection' or self.task_name == 'imputation':
-            self.pred_len = configs.seq_len
-        else:
-            self.pred_len = configs.pred_len
-        # Series decomposition block from Autoformer
-        self.decompsition = series_decomp(configs.moving_avg)
-        self.individual = individual
-        self.channels = configs.enc_in
+        self.pred_len = configs.pred_len
+        self.c_out = configs.c_out
+        self.enc_in = configs.enc_in
 
-        if self.individual:
-            self.Linear_Seasonal = nn.ModuleList()
-            self.Linear_Trend = nn.ModuleList()
+        # 移动平均分解，kernel_size 一般设 25
+        self.decompsition = series_decomp(25)
 
-            for i in range(self.channels):
-                self.Linear_Seasonal.append(
-                    nn.Linear(self.seq_len, self.pred_len))
-                self.Linear_Trend.append(
-                    nn.Linear(self.seq_len, self.pred_len))
+        # 每个通道共享的线性层（非 individual 模式）
+        self.Linear_Seasonal = nn.Linear(self.seq_len, self.pred_len)
+        self.Linear_Trend = nn.Linear(self.seq_len, self.pred_len)
 
-                self.Linear_Seasonal[i].weight = nn.Parameter(
-                    (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
-                self.Linear_Trend[i].weight = nn.Parameter(
-                    (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
-        else:
-            self.Linear_Seasonal = nn.Linear(self.seq_len, self.pred_len)
-            self.Linear_Trend = nn.Linear(self.seq_len, self.pred_len)
+        # 用均匀权重初始化（DLinear 论文的做法）
+        self.Linear_Seasonal.weight = nn.Parameter(
+            (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
+        self.Linear_Trend.weight = nn.Parameter(
+            (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
 
-            self.Linear_Seasonal.weight = nn.Parameter(
-                (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
-            self.Linear_Trend.weight = nn.Parameter(
-                (1 / self.seq_len) * torch.ones([self.pred_len, self.seq_len]))
+        # 末端投影：把 enc_in 个通道压缩成 c_out 个
+        self.channel_proj = nn.Linear(self.enc_in, self.c_out)
 
-        if self.task_name == 'classification':
-            self.projection = nn.Linear(
-                configs.enc_in * configs.seq_len, configs.num_class)
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        # x_enc: (B, seq_len, enc_in)
+        seasonal_init, trend_init = self.decompsition(x_enc)   # 各 (B, seq_len, enc_in)
 
-    def encoder(self, x):
-        seasonal_init, trend_init = self.decompsition(x)
-        seasonal_init, trend_init = seasonal_init.permute(
-            0, 2, 1), trend_init.permute(0, 2, 1)
-        if self.individual:
-            seasonal_output = torch.zeros([seasonal_init.size(0), seasonal_init.size(1), self.pred_len],
-                                          dtype=seasonal_init.dtype).to(seasonal_init.device)
-            trend_output = torch.zeros([trend_init.size(0), trend_init.size(1), self.pred_len],
-                                       dtype=trend_init.dtype).to(trend_init.device)
-            for i in range(self.channels):
-                seasonal_output[:, i, :] = self.Linear_Seasonal[i](
-                    seasonal_init[:, i, :])
-                trend_output[:, i, :] = self.Linear_Trend[i](
-                    trend_init[:, i, :])
-        else:
-            seasonal_output = self.Linear_Seasonal(seasonal_init)
-            trend_output = self.Linear_Trend(trend_init)
-        x = seasonal_output + trend_output
-        return x.permute(0, 2, 1)
+        # 转成 (B, enc_in, seq_len)，让 Linear 作用于时间维
+        seasonal_init = seasonal_init.permute(0, 2, 1)          # (B, enc_in, seq_len)
+        trend_init = trend_init.permute(0, 2, 1)
 
-    def forecast(self, x_enc):
-        # Encoder
-        return self.encoder(x_enc)
+        seasonal_out = self.Linear_Seasonal(seasonal_init)      # (B, enc_in, pred_len)
+        trend_out = self.Linear_Trend(trend_init)               # (B, enc_in, pred_len)
 
-    def imputation(self, x_enc):
-        # Encoder
-        return self.encoder(x_enc)
+        x_out = seasonal_out + trend_out                        # (B, enc_in, pred_len)
+        x_out = x_out.permute(0, 2, 1)                          # (B, pred_len, enc_in)
 
-    def anomaly_detection(self, x_enc):
-        # Encoder
-        return self.encoder(x_enc)
-
-    def classification(self, x_enc):
-        # Encoder
-        enc_out = self.encoder(x_enc)
-        # Output
-        # (batch_size, seq_length * d_model)
-        output = enc_out.reshape(enc_out.shape[0], -1)
-        # (batch_size, num_classes)
-        output = self.projection(output)
-        return output
+        # 投影到 c_out 通道
+        dec_out = self.channel_proj(x_out)                      # (B, pred_len, c_out)
+        return dec_out
 
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
-        if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc)
-            return dec_out[:, -self.pred_len:, :]  # [B, L, D]
-        if self.task_name == 'imputation':
-            dec_out = self.imputation(x_enc)
-            return dec_out  # [B, L, D]
-        if self.task_name == 'anomaly_detection':
-            dec_out = self.anomaly_detection(x_enc)
-            return dec_out  # [B, L, D]
-        if self.task_name == 'classification':
-            dec_out = self.classification(x_enc)
-            return dec_out  # [B, N]
+        if self.task_name == 'long_term_forecast':
+            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            return dec_out
         return None

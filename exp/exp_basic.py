@@ -1,7 +1,8 @@
 import os
 import torch
 import importlib
-import pkgutil  
+import pkgutil
+from models import TimesNet, GRU, CNN, DLinear
 
 # Just put your model files under models/ folder
 # e.g., models/Transformer.py, models/LSTM.py, etc.

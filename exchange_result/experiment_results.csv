@@ -1,0 +1,2 @@
+﻿Task,Model,Dataset,Seq Len,Pred Len,Num Variables,Test Samples,MSE,MAE,RMSE,MAPE (%),Best Epoch,Best Val Loss,Total Epochs Run,Training Time (s),Top k,d_model,d_ff,e_layers,Learning Rate,Batch Size
+long_term_forecast,TimesNet,Exchange,96,96,8,1422,0.105292,0.235133,0.324487,139.4375,2,0.151952,5,92.4,5,64,64,2,0.0001,32

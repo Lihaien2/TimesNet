@@ -101,30 +101,14 @@ class Model(nn.Module):
                 configs.d_model * configs.seq_len, configs.num_class)
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
-        # Normalization from Non-stationary Transformer
-        means = x_enc.mean(1, keepdim=True).detach()
-        x_enc = x_enc.sub(means)
-        stdev = torch.sqrt(
-            torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
-        x_enc = x_enc.div(stdev)
+        # 去掉 Non-stationary 标准化，直接处理
+        enc_out = self.enc_embedding(x_enc, x_mark_enc)  # [B, T, d_model]
+        enc_out = self.predict_linear(enc_out.permute(0, 2, 1)).permute(0, 2, 1)
 
-        # embedding
-        enc_out = self.enc_embedding(x_enc, x_mark_enc)  # [B,T,C]
-        enc_out = self.predict_linear(enc_out.permute(0, 2, 1)).permute(
-            0, 2, 1)  # align temporal dimension
-        # TimesNet
         for i in range(self.layer):
             enc_out = self.layer_norm(self.model[i](enc_out))
-        # project back
-        dec_out = self.projection(enc_out)
 
-        # De-Normalization from Non-stationary Transformer
-        dec_out = dec_out.mul(
-                  (stdev[:, 0, :].unsqueeze(1).repeat(
-                      1, self.pred_len + self.seq_len, 1)))
-        dec_out = dec_out.add(
-                  (means[:, 0, :].unsqueeze(1).repeat(
-                      1, self.pred_len + self.seq_len, 1)))
+        dec_out = self.projection(enc_out)  # [B, T, c_out=1]
         return dec_out
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):

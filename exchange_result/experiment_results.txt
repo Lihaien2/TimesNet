@@ -1,0 +1,24 @@
+============================================================
+Experiment Results
+============================================================
+Task                     : long_term_forecast
+Model                    : TimesNet
+Dataset                  : Exchange
+Seq Len                  : 96
+Pred Len                 : 96
+Num Variables            : 8
+Test Samples             : 1422
+MSE                      : 0.105292
+MAE                      : 0.235133
+RMSE                     : 0.324487
+MAPE (%)                 : 139.4375
+Best Epoch               : 2
+Best Val Loss            : 0.151952
+Total Epochs Run         : 5
+Training Time (s)        : 92.4
+Top k                    : 5
+d_model                  : 64
+d_ff                     : 64
+e_layers                 : 2
+Learning Rate            : 0.0001
+Batch Size               : 32

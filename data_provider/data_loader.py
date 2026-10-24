@@ -14,9 +14,11 @@ import warnings
 from utils.augmentation import run_augmentation_single
 from datasets import load_dataset
 from huggingface_hub import hf_hub_download
+
 warnings.filterwarnings('ignore')
 
 HUGGINGFACE_REPO = "thuml/Time-Series-Library"
+
 
 class Dataset_ETT_hour(Dataset):
     def __init__(self, args, root_path, flag='train', size=None,
@@ -59,7 +61,7 @@ class Dataset_ETT_hour(Dataset):
         else:
             ds = load_dataset(HUGGINGFACE_REPO, name=cfg_name)
             df_raw = ds["train"].to_pandas()
-            
+
         border1s = [0, 12 * 30 * 24 - self.seq_len, 12 * 30 * 24 + 4 * 30 * 24 - self.seq_len]
         border2s = [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24]
         border1 = border1s[self.set_type]
@@ -88,7 +90,7 @@ class Dataset_ETT_hour(Dataset):
             data_stamp = df_stamp.drop(['date'], 1).values
         elif self.timeenc == 1:
             data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
-            data_stamp = data_stamp.transpose(1, 0) 
+            data_stamp = data_stamp.transpose(1, 0)
 
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
@@ -150,7 +152,7 @@ class Dataset_ETT_minute(Dataset):
 
     def __read_data__(self):
         self.scaler = StandardScaler()
-        
+
         local_fp = os.path.join(self.root_path, self.data_path)
         cfg_name = os.path.splitext(os.path.basename(self.data_path))[0]
 
@@ -382,7 +384,7 @@ class Dataset_M4(Dataset):
         insample[-len(insample_window):, 0] = insample_window
         insample_mask[-len(insample_window):, 0] = 1.0
         outsample_window = sampled_timeseries[
-                           max(0, cut_point - self.label_len):min(len(sampled_timeseries), cut_point + self.pred_len)]
+            max(0, cut_point - self.label_len):min(len(sampled_timeseries), cut_point + self.pred_len)]
         outsample[:len(outsample_window), 0] = outsample_window
         outsample_mask[:len(outsample_window), 0] = 1.0
         return insample, outsample, insample_mask, outsample_mask
@@ -420,25 +422,25 @@ class PSMSegLoader(Dataset):
         label_path = os.path.join(root_path, "test_label.csv")
 
         if all(os.path.exists(p) for p in [train_path, test_path, label_path]):
-            train_df      = pd.read_csv(train_path)
-            test_df       = pd.read_csv(test_path)
+            train_df = pd.read_csv(train_path)
+            test_df = pd.read_csv(test_path)
             test_label_df = pd.read_csv(label_path)
         else:
-            ds_data  = load_dataset(HUGGINGFACE_REPO, name="PSM-data")
+            ds_data = load_dataset(HUGGINGFACE_REPO, name="PSM-data")
             ds_label = load_dataset(HUGGINGFACE_REPO, name="PSM-label")
-            train_df      = ds_data["train"].to_pandas()
-            test_df       = ds_data["test"].to_pandas()
+            train_df = ds_data["train"].to_pandas()
+            test_df = ds_data["test"].to_pandas()
             test_label_df = ds_label[next(iter(ds_label))].to_pandas()
 
         data = train_df.values[:, 1:]
         data = np.nan_to_num(data)
         self.scaler.fit(data)
         data = self.scaler.transform(data)
-        
+
         test_data = test_df.values[:, 1:]
         test_data = np.nan_to_num(test_data)
         self.test = self.scaler.transform(test_data)
-        
+
         self.train = data
         data_len = len(self.train)
         self.val = self.train[(int)(data_len * 0.8):]
@@ -467,7 +469,7 @@ class PSMSegLoader(Dataset):
                 self.test_labels[index:index + self.win_size])
         else:
             return np.float32(self.test[
-                              index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
+                                  index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
 
 
@@ -477,30 +479,31 @@ class MSLSegLoader(Dataset):
         self.step = step
         self.win_size = win_size
         self.scaler = StandardScaler()
-        
+
         train_path = os.path.join(root_path, "MSL_train.npy")
-        test_path  = os.path.join(root_path, "MSL_test.npy")
+        test_path = os.path.join(root_path, "MSL_test.npy")
         label_path = os.path.join(root_path, "MSL_test_label.npy")
 
         if all(os.path.exists(p) for p in [train_path, test_path, label_path]):
             train_data = np.load(train_path)
-            test_data  = np.load(test_path)
+            test_data = np.load(test_path)
             test_label = np.load(label_path)
         else:
-            train_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="MSL/MSL_train.npy",repo_type="dataset")
-            test_path  = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="MSL/MSL_test.npy",repo_type="dataset")
-            label_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="MSL/MSL_test_label.npy",repo_type="dataset")
+            train_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="MSL/MSL_train.npy", repo_type="dataset")
+            test_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="MSL/MSL_test.npy", repo_type="dataset")
+            label_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="MSL/MSL_test_label.npy",
+                                         repo_type="dataset")
 
-            train_data  = np.load(train_path)
-            test_data   = np.load(test_path)
-            test_label  = np.load(label_path)
+            train_data = np.load(train_path)
+            test_data = np.load(test_path)
+            test_label = np.load(label_path)
 
         self.scaler.fit(train_data)
         train_data = self.scaler.transform(train_data)
-        test_data  = self.scaler.transform(test_data)
+        test_data = self.scaler.transform(test_data)
 
         self.train = train_data
-        self.test  = test_data
+        self.test = test_data
         self.test_labels = test_label
 
         data_len = len(self.train)
@@ -530,7 +533,7 @@ class MSLSegLoader(Dataset):
                 self.test_labels[index:index + self.win_size])
         else:
             return np.float32(self.test[
-                              index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
+                                  index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
 
 
@@ -540,31 +543,32 @@ class SMAPSegLoader(Dataset):
         self.step = step
         self.win_size = win_size
         self.scaler = StandardScaler()
-        
+
         train_path = os.path.join(root_path, "SMAP_train.npy")
-        test_path  = os.path.join(root_path, "SMAP_test.npy")
+        test_path = os.path.join(root_path, "SMAP_test.npy")
         label_path = os.path.join(root_path, "SMAP_test_label.npy")
 
         if all(os.path.exists(p) for p in [train_path, test_path, label_path]):
             train_data = np.load(train_path)
-            test_data  = np.load(test_path)
+            test_data = np.load(test_path)
             test_label = np.load(label_path)
         else:
-            train_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMAP/SMAP_train.npy",repo_type="dataset")
-            test_path  = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMAP/SMAP_test.npy",repo_type="dataset")
-            label_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMAP/SMAP_test_label.npy",repo_type="dataset")
+            train_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMAP/SMAP_train.npy", repo_type="dataset")
+            test_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMAP/SMAP_test.npy", repo_type="dataset")
+            label_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMAP/SMAP_test_label.npy",
+                                         repo_type="dataset")
 
-            train_data  = np.load(train_path)
-            test_data   = np.load(test_path)
+            train_data = np.load(train_path)
+            test_data = np.load(test_path)
             test_label = np.load(label_path)
 
         # 标准化
         self.scaler.fit(train_data)
         train_data = self.scaler.transform(train_data)
-        test_data  = self.scaler.transform(test_data)
+        test_data = self.scaler.transform(test_data)
 
         self.train = train_data
-        self.test  = test_data
+        self.test = test_data
         self.test_labels = test_label
 
         data_len = len(self.train)
@@ -595,7 +599,7 @@ class SMAPSegLoader(Dataset):
                 self.test_labels[index:index + self.win_size])
         else:
             return np.float32(self.test[
-                              index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
+                                  index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
 
 
@@ -605,24 +609,25 @@ class SMDSegLoader(Dataset):
         self.step = step
         self.win_size = win_size
         self.scaler = StandardScaler()
-        
+
         train_path = os.path.join(root_path, "SMD_train.npy")
-        test_path  = os.path.join(root_path, "SMD_test.npy")
+        test_path = os.path.join(root_path, "SMD_test.npy")
         label_path = os.path.join(root_path, "SMD_test_label.npy")
 
         if all(os.path.exists(p) for p in [train_path, test_path, label_path]):
             train_data = np.load(train_path)
-            test_data  = np.load(test_path)
+            test_data = np.load(test_path)
             test_label = np.load(label_path)
         else:
-            train_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMD/SMD_train.npy",repo_type="dataset")
-            test_path  = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMD/SMD_test.npy",repo_type="dataset")
-            label_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMD/SMD_test_label.npy",repo_type="dataset")
+            train_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMD/SMD_train.npy", repo_type="dataset")
+            test_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMD/SMD_test.npy", repo_type="dataset")
+            label_path = hf_hub_download(repo_id=HUGGINGFACE_REPO, filename="SMD/SMD_test_label.npy",
+                                         repo_type="dataset")
 
-            train_data  = np.load(train_path)
-            test_data   = np.load(test_path)
+            train_data = np.load(train_path)
+            test_data = np.load(test_path)
             test_label = np.load(label_path)
-            
+
         self.scaler.fit(train_data)
         train_data = self.scaler.transform(train_data)
         test_data = self.scaler.transform(test_data)
@@ -655,7 +660,7 @@ class SMDSegLoader(Dataset):
                 self.test_labels[index:index + self.win_size])
         else:
             return np.float32(self.test[
-                              index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
+                                  index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
 
 
@@ -667,14 +672,14 @@ class SWATSegLoader(Dataset):
         self.scaler = StandardScaler()
 
         train2_path = os.path.join(root_path, "swat_train2.csv")
-        test_path   = os.path.join(root_path, "swat2.csv")
+        test_path = os.path.join(root_path, "swat2.csv")
         if all(os.path.exists(p) for p in [train2_path, test_path]):
             train_data = pd.read_csv(train2_path)
-            test_data   = pd.read_csv(test_path)
+            test_data = pd.read_csv(test_path)
         else:
             ds = load_dataset(HUGGINGFACE_REPO, name="SWaT")
             train_data = ds["train"].to_pandas()
-            test_data  = ds["test"].to_pandas()
+            test_data = ds["test"].to_pandas()
         labels = test_data.values[:, -1:]
         train_data = train_data.values[:, :-1]
         test_data = test_data.values[:, :-1]
@@ -714,7 +719,7 @@ class SWATSegLoader(Dataset):
                 self.test_labels[index:index + self.win_size])
         else:
             return np.float32(self.test[
-                              index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
+                                  index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
 
 
@@ -787,7 +792,7 @@ class UEAloader(Dataset):
 
     def load_single(self, filepath):
         df, labels = load_from_tsfile_to_dataframe(filepath, return_separate_X_and_y=True,
-                                                             replace_missing_vals_with='NaN')
+                                                   replace_missing_vals_with='NaN')
         labels = pd.Series(labels, dtype="category")
         self.class_names = labels.cat.categories
         labels_df = pd.DataFrame(labels.cat.codes,
@@ -844,17 +849,26 @@ class UEAloader(Dataset):
             batch_x = batch_x.reshape((1 * seq_len, num_columns))
 
         return self.instance_norm(torch.from_numpy(batch_x)), \
-               torch.from_numpy(labels)
+            torch.from_numpy(labels)
 
     def __len__(self):
         return len(self.all_IDs)
 
+
 class Dataset_MultiStock(Dataset):
-    """
-    多股票面板数据加载器。
-    返回:
-      - train/val: (x, y, x_mark, y_mark) 4 元组
-    """
+    """多股票面板数据集：按全市场日期切分，并按 target_end_date 清除跨界标签。"""
+
+    # 仅允许事先定义的行情/技术指标进入模型，审计字段绝不作为特征。
+    DEFAULT_FEATURES = (
+        'open', 'high', 'low', 'close', 'volume', 'amount',
+        'pct_chg', 'turn', 'ma5', 'ma20'
+    )
+    META_COLUMNS = {
+        'date', 'target_start_date', 'target_end_date', 'stock_code', 'target',
+        'is_constituent', 'is_st', 'historical_status_known',
+        'is_blacklisted', 'is_delisted', 'is_eligible',
+        'is_target_eligible', 'is_constituent_at_target'
+    }
 
     def __init__(self, args, root_path, flag='train', size=None,
                  features='MS', data_path='panel.csv', target='target',
@@ -862,171 +876,202 @@ class Dataset_MultiStock(Dataset):
                  stock_code_col='stock_code', window_stride=1,
                  train_ratio=0.7, vali_ratio=0.1):
         self.args = args
-        if size is None:
-            self.seq_len = 60
-            self.label_len = 0
-            self.pred_len = 1
-        else:
-            self.seq_len = size[0]
-            self.label_len = size[1]
-            self.pred_len = size[2]
-
-        assert flag in ['train', 'val', 'test']
-        type_map = {'train': 0, 'val': 1, 'test': 2}
-        self.set_type = type_map[flag]
-
-        self.features = features
-        self.target = target
-        self.scale = scale
-        self.timeenc = timeenc
-        self.freq = freq
-        self.root_path = root_path
-        self.data_path = data_path
-        self.stock_code_col = stock_code_col
-        self.window_stride = window_stride
-        self.train_ratio = train_ratio
-        self.vali_ratio = vali_ratio
-
-        if self.label_len > 0:
-            raise ValueError(
-                f"Dataset_MultiStock 只支持 label_len=0，当前 label_len={self.label_len}。"
-            )
-
+        self.seq_len, self.label_len, self.pred_len = size or (60, 0, 1)
+        if flag not in ('train', 'val', 'test'):
+            raise ValueError(f'不支持的 flag: {flag}')
+        self.set_type = {'train': 0, 'val': 1, 'test': 2}[flag]
+        self.features, self.target, self.scale = features, target, scale
+        self.timeenc, self.freq = timeenc, freq
+        self.root_path, self.data_path = root_path, data_path
+        self.stock_code_col, self.window_stride = stock_code_col, max(1, int(window_stride))
+        self.train_ratio, self.vali_ratio = train_ratio, vali_ratio
+        if self.label_len != 0:
+            raise ValueError('Dataset_MultiStock 只支持 label_len=0')
         self.__read_data__()
 
     def __read_data__(self):
+        df = pd.read_csv(os.path.join(self.root_path, self.data_path))
+        required = {'date', self.stock_code_col, self.target}
+        missing = required - set(df.columns)
+        if missing:
+            raise ValueError(f'面板缺少必要列: {sorted(missing)}')
+        if 'target_end_date' not in df.columns:
+            raise ValueError('缺少 target_end_date；请重新生成面板，避免无法清除跨切分标签。')
+        if 'target_start_date' not in df.columns:
+            raise ValueError('缺少 target_start_date；请重新生成带入场日期的面板。')
+
+        # 只用明确列出的行情特征，禁止将日期、标签或资格元数据泄漏给模型。
+        self.feature_cols = [c for c in self.DEFAULT_FEATURES if c in df.columns]
+        if not self.feature_cols:
+            raise ValueError('未找到任何允许使用的行情特征列。')
+        self.n_features = len(self.feature_cols)
+        self.scale_cols = list(self.feature_cols)
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df['target_start_date'] = pd.to_datetime(df['target_start_date'], errors='coerce')
+        df['target_end_date'] = pd.to_datetime(df['target_end_date'], errors='coerce')
+        df = df.dropna(subset=['date', 'target_start_date', 'target_end_date', self.target])
+        invalid_target_dates = (
+                (df['target_start_date'] <= df['date'])
+                | (df['target_end_date'] < df['target_start_date'])
+        )
+        if invalid_target_dates.any():
+            example = df.loc[
+                invalid_target_dates, [self.stock_code_col, 'date', 'target_start_date', 'target_end_date']].head(5)
+            raise ValueError(
+                '发现不合法的目标日期（要求 signal_date < target_start_date <= target_end_date）：\n' + example.to_string(
+                    index=False))
+        df = df.sort_values([self.stock_code_col, 'date']).reset_index(drop=True)
+        dates = pd.Index(sorted(df['date'].unique()))
+        if len(dates) < 3:
+            raise ValueError('有效交易日期不足，无法进行时间切分。')
+        train_i = max(1, min(len(dates) - 2, int(len(dates) * self.train_ratio)))
+        val_i = max(train_i + 1, min(len(dates) - 1, int(len(dates) * (self.train_ratio + self.vali_ratio))))
+        self.train_cut, self.val_cut = dates[train_i], dates[val_i]
+        # 关键：dates[-1] 是最后一个可预测信号日，通常比真实数据末日早一个预测周期。
+        # 测试集标签的边界必须依据目标覆盖的最晚日期，而不是最后一个信号日。
+        self.max_signal_date = pd.Timestamp(dates[-1])
+        self.max_date = max(pd.Timestamp(df['date'].max()), pd.Timestamp(df['target_end_date'].max()))
+        print(
+            f'[Dataset] 全局时间边界 train<{self.train_cut.date()}, val<{self.val_cut.date()}, test≤{self.max_date.date()}')
+
+        # 统一的组合决策日期：基于全局交易日历，而不是每只股票各自的行号。
+        # seq_len-1 保证决策日之前至少有 seq_len 个全局观测日期；单只股票仍需有足够历史行。
+        self.decision_dates = pd.Index(dates[self.seq_len - 1::self.window_stride])
+        self.decision_date_set = set(pd.Timestamp(d) for d in self.decision_dates)
+
+        # 目标标准化统计量只使用标签结束日也在训练区间内的样本，避免边界标签进入统计量。
+        train_rows = df[(df['date'] < self.train_cut) & (df['target_end_date'] < self.train_cut)]
         self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
-
-        all_cols = list(df_raw.columns)
-        assert 'date' in all_cols
-        assert self.stock_code_col in all_cols
-        assert self.target in all_cols
-
-        feature_cols = [c for c in all_cols
-                        if c not in ('date', self.stock_code_col, self.target)]
-        self.feature_cols = feature_cols
-        self.n_features = len(feature_cols)
-
-        self.scale_cols = [c for c in feature_cols]   # 全部特征标准化
-
-        # target 也纳入标准化（独立计算均值/方差）
-        self.target_mean = None
-        self.target_std = None
-
-        df_raw['date'] = pd.to_datetime(df_raw['date'])
-        groups = df_raw.groupby(self.stock_code_col, sort=False)
-
-        all_codes = sorted(df_raw[self.stock_code_col].unique())
-        self.code_to_id = {code: i for i, code in enumerate(all_codes)}
-
-        stock_splits = []
-        for code, gdf in groups:
-            gdf = gdf.sort_values('date').reset_index(drop=True)
-            n = len(gdf)
-            if n < self.seq_len + 1:
-                continue
-            num_train = int(n * self.train_ratio)
-            num_vali = int(n * self.vali_ratio)
-            if num_train < self.seq_len + 1:
-                continue
-            train_end = num_train
-            vali_end = num_train + num_vali
-            stock_splits.append((code, gdf, train_end, vali_end))
-
-        # ---- 用训练集拟合 scaler ----
         if self.scale:
-            train_parts = [
-                gdf.iloc[:train_end][self.scale_cols]
-                for _, gdf, train_end, _ in stock_splits
-            ]
-            if train_parts:
-                train_all = pd.concat(train_parts, ignore_index=True)
-                self.scaler.fit(train_all.values)
-            # 用训练集 target 拟合均值和方差
-            train_targets = []
-            for _, gdf, train_end, _ in stock_splits:
-                train_targets.append(gdf.iloc[:train_end][self.target].values)
-            if train_targets:
-                train_targets = np.concatenate(train_targets)
-                self.target_mean = float(train_targets.mean())
-                self.target_std = float(train_targets.std()) + 1e-8
+            if train_rows.empty:
+                raise ValueError('训练时间段没有可用且标签结束于训练边界前的样本，无法拟合 scaler。')
+            self.scaler.fit(train_rows[self.scale_cols].astype(float).values)
+            t = train_rows[self.target].astype(float).values
+            self.target_mean = float(np.mean(t))
+            self.target_std = float(np.std(t)) + 1e-8
+        else:
+            self.target_mean, self.target_std = None, None
 
-        # ---- 生成样本 ----
-        self.data_x = []
-        self.data_y = []
-        self.data_stamp = []
-        self.data_sid = []
-
-        for code, gdf, train_end, vali_end in stock_splits:
-            sid = self.code_to_id[code]
-            n = len(gdf)
-            if self.set_type == 0:
-                b1, b2 = 0, train_end
-            elif self.set_type == 1:
-                b1, b2 = train_end, vali_end
-            else:
-                b1, b2 = vali_end, n
-
-            sub = gdf.iloc[b1:b2].reset_index(drop=True)
-            if len(sub) < self.seq_len + 1:
+        self.data_x, self.data_y, self.data_stamp, self.data_sid = [], [], [], []
+        self.data_meta = []
+        codes = sorted(df[self.stock_code_col].astype(str).unique())
+        self.code_to_id = {c: i for i, c in enumerate(codes)}
+        for code, g in df.groupby(self.stock_code_col, sort=False):
+            g = g.sort_values('date').reset_index(drop=True)
+            if len(g) < self.seq_len:
                 continue
-
-            # ★ 新增：对 sub 的特征列做标准化
-            if self.scale:
-                sub = sub.copy()
-                sub[self.scale_cols] = self.scaler.transform(
-                    sub[self.scale_cols].values
-                )
-
+            raw_x = g[self.feature_cols].astype(float).values
+            x_all = self.scaler.transform(raw_x) if self.scale else raw_x
             if self.timeenc == 0:
-                stamp = np.zeros((len(sub), 4), dtype=np.float32)
+                stamps = np.zeros((len(g), 4), dtype=np.float32)
             else:
-                stamp = time_features(
-                    pd.to_datetime(sub['date'].values), freq=self.freq
-                ).transpose(1, 0).astype(np.float32)
-
-            max_s_end = len(sub) - 1
-            s_begin_list = list(range(0, max_s_end - self.seq_len + 1,
-                                      self.window_stride))
-
-            for s_begin in s_begin_list:
-                s_end = s_begin + self.seq_len
-                y_idx = s_end - 1     # 输入最后一天的索引
-
-                seq_x = sub[self.feature_cols].iloc[s_begin:s_end].values
-                seq_y = sub[[self.target]].iloc[y_idx:y_idx + 1].values
+                stamps = time_features(pd.to_datetime(g['date'].values), freq=self.freq).transpose(1, 0).astype(
+                    np.float32)
+            dates_stock = g['date'].values
+            ends_stock = g['target_end_date'].values
+            y_all = g[self.target].astype(float).values
+            # 输入可使用切分点之前的历史上下文；标签结束日必须留在对应分区内。
+            for i in range(self.seq_len - 1, len(g)):
+                signal_date = pd.Timestamp(dates_stock[i])
+                # 所有股票仅在同一组全局决策日期产生样本。
+                if signal_date not in self.decision_date_set:
+                    continue
+                target_end = pd.Timestamp(ends_stock[i])
+                if self.set_type == 0:
+                    keep = signal_date < self.train_cut and target_end < self.train_cut
+                elif self.set_type == 1:
+                    keep = self.train_cut <= signal_date < self.val_cut and target_end < self.val_cut
+                else:
+                    keep = self.val_cut <= signal_date <= self.max_date and target_end <= self.max_date
+                if not keep:
+                    continue
+                # 若存在资格字段，训练/验证/测试样本都只取信号日可交易成分股。
+                if 'is_eligible' in g.columns:
+                    eligible_value = g.loc[i, 'is_eligible']
+                    if isinstance(eligible_value, str):
+                        eligible = eligible_value.strip().lower() in ('true', '1', 'yes', 'y')
+                    else:
+                        eligible = bool(eligible_value) if pd.notna(eligible_value) else False
+                    if not eligible:
+                        continue
+                else:
+                    eligible = True
+                x = x_all[i - self.seq_len + 1:i + 1]
+                y = y_all[i]
                 if self.target_mean is not None:
-                    seq_y = (seq_y - self.target_mean) / self.target_std
-                seq_x_mark = stamp[s_begin:s_end]
-                seq_y_mark = stamp[y_idx:y_idx + 1]
+                    y = (y - self.target_mean) / self.target_std
+                self.data_x.append(x.astype(np.float32))
+                self.data_y.append(np.array([y], dtype=np.float32))
+                self.data_stamp.append((stamps[i - self.seq_len + 1:i + 1], stamps[i:i + 1]))
+                self.data_sid.append(self.code_to_id[str(code)])
+                self.data_meta.append({
+                    'date': signal_date.strftime('%Y-%m-%d'),
+                    'target_start_date': pd.Timestamp(g.loc[i, 'target_start_date']).strftime('%Y-%m-%d'),
+                    'target_end_date': target_end.strftime('%Y-%m-%d'),
+                    'stock_code': str(code),
+                    'is_eligible': bool(eligible),
+                })
 
-                self.data_x.append(seq_x)
-                self.data_y.append(seq_y)
-                self.data_stamp.append((seq_x_mark, seq_y_mark))
-                self.data_sid.append(sid)
+        self.data_x = np.asarray(self.data_x, dtype=np.float32).reshape(-1, self.seq_len, self.n_features)
+        self.data_y = np.asarray(self.data_y, dtype=np.float32).reshape(-1, 1)
+        self.data_sid = np.asarray(self.data_sid, dtype=np.int64)
+        if len(self.data_x) == 0:
+            raise ValueError(
+                f'{("train", "val", "test")[self.set_type]} 分区没有可用样本；检查日期边界、样本长度和资格过滤。')
 
-        self.data_x = np.array(self.data_x, dtype=np.float32)
-        self.data_y = np.array(self.data_y, dtype=np.float32)
-        self.data_sid = np.array(self.data_sid, dtype=np.int64)
+        # ---- 审计：逐样本检查信号日期和标签结束日期是否落在本分区 ----
+        _audit = pd.DataFrame(self.data_meta)
+        _audit['date'] = pd.to_datetime(_audit['date'])
+        _audit['target_start_date'] = pd.to_datetime(_audit['target_start_date'])
+        _audit['target_end_date'] = pd.to_datetime(_audit['target_end_date'])
+        _valid_target_dates = (
+                (_audit['target_start_date'] > _audit['date'])
+                & (_audit['target_end_date'] >= _audit['target_start_date'])
+        )
+        if self.set_type == 0:  # train: 信号日和标签结束日都必须早于 train_cut
+            _valid = (
+                    (_audit['date'] < self.train_cut)
+                    & (_audit['target_end_date'] < self.train_cut)
+            )
+        elif self.set_type == 1:  # val: 信号日位于 train_cut 到 val_cut，标签不能越过 val_cut
+            _valid = (
+                    (_audit['date'] >= self.train_cut)
+                    & (_audit['date'] < self.val_cut)
+                    & (_audit['target_end_date'] < self.val_cut)
+            )
+        else:  # test: 信号日从 val_cut 起，标签结束日不能超过数据最后日期
+            _valid = (
+                    (_audit['date'] >= self.val_cut)
+                    & (_audit['date'] <= self.max_date)
+                    & (_audit['target_end_date'] <= self.max_date)
+            )
 
-        print(f'[Dataset] data_x 均值={self.data_x.mean():.4f}, '
-              f'std={self.data_x.std():.4f}, '
-              f'max={np.abs(self.data_x).max():.2f}')
-        print(f'[Dataset] data_y 均值={self.data_y.mean():.4f}, '
-              f'std={self.data_y.std():.4f}')
+        _valid = _valid & _valid_target_dates
+        _bad = _audit.loc[~_valid, ['stock_code', 'date', 'target_start_date', 'target_end_date']]
+        print(
+            f'[Audit] split={("train", "val", "test")[self.set_type]}, '
+            f'分区日期检查违规样本={len(_bad)}/{len(_audit)}'
+        )
+        if not _bad.empty:
+            print('[Audit] 前 10 条违规记录：')
+            print(_bad.head(10).to_string(index=False))
+            raise ValueError('发现标签结束日期或信号日期跨越数据分区边界；已停止运行。')
+
+        print(
+            f'[Dataset] split={("train", "val", "test")[self.set_type]}, samples={len(self.data_x)}, features={self.feature_cols}')
+        print(
+            f'[Dataset] data_x mean={self.data_x.mean():.4f}, std={self.data_x.std():.4f}, max_abs={np.abs(self.data_x).max():.2f}')
+        print(f'[Dataset] data_y mean={self.data_y.mean():.4f}, std={self.data_y.std():.4f}')
 
     def __getitem__(self, index):
-        seq_x = self.data_x[index]
-        seq_y = self.data_y[index]
-        seq_x_mark, seq_y_mark = self.data_stamp[index]
-
-        # 只有 train 返回 4 元组（train() 循环直接解包 4 个）
-        # val 和 test 都返回 5 元组（vali() 和 test() 都需要 stock_id）
-        if self.set_type == 0:  # train
-            return (seq_x, seq_y, seq_x_mark, seq_y_mark)
-        else:  # val 或 test
-            return (seq_x, seq_y, seq_x_mark, seq_y_mark, self.data_sid[index])
+        x, y = self.data_x[index], self.data_y[index]
+        # Forecasting models expect y as [time, target_dim], not [target_dim].
+        # With pred_len=1 and label_len=0, each sample must therefore be [1, 1].
+        y = y.reshape(self.pred_len, -1)
+        xm, ym = self.data_stamp[index]
+        if self.set_type == 0:
+            return x, y, xm, ym
+        return x, y, xm, ym, self.data_sid[index]
 
     def __len__(self):
         return len(self.data_x)
@@ -1035,3 +1080,4 @@ class Dataset_MultiStock(Dataset):
         if self.target_mean is None:
             return data
         return data * self.target_std + self.target_mean
+

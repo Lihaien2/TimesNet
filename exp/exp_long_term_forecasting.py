@@ -41,10 +41,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
     def _select_criterion(self):
         criterion = nn.MSELoss()
         return criterion
- 
 
     def vali(self, vali_data, vali_loader, criterion):
-        total_loss = []
+        # Aggregate by element count so a smaller final batch is not weighted equally.
+        total_loss = 0.0
+        total_elements = 0
         self.model.eval()
         with torch.no_grad():
             for i, batch in enumerate(vali_loader):
@@ -77,16 +78,15 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 true = batch_y.detach()
 
                 loss = criterion(pred, true)
-
-                total_loss.append(loss.item())
-        total_loss = np.average(total_loss)
+                n_elements = true.numel()
+                total_loss += loss.item() * n_elements
+                total_elements += n_elements
         self.model.train()
-        return total_loss
+        return total_loss / total_elements if total_elements else float("inf")
 
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
-        test_data, test_loader = self._get_data(flag='test')
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -159,12 +159,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
-            test_loss = self.vali(test_data, test_loader, criterion)
             self.train_loss_history.append(train_loss)
             self.vali_loss_history.append(vali_loss)
 
-            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
+                epoch + 1, train_steps, train_loss, vali_loss))
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
@@ -193,6 +192,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         preds = []
         trues = []
         stock_ids = []
+        sample_dates = []
+        sample_meta_index = 0
 
         self.model.eval()
         with torch.no_grad():
@@ -205,6 +206,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     stock_ids.append(batch_sid.numpy())
                 else:
                     batch_x, batch_y, batch_x_mark, batch_y_mark = batch
+
+                batch_size = int(batch_x.shape[0])
+                if hasattr(test_data, 'data_meta'):
+                    sample_dates.extend(
+                        m['date'] for m in test_data.data_meta[sample_meta_index:sample_meta_index + batch_size])
+                    sample_meta_index += batch_size
 
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
@@ -257,6 +264,13 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         dir_acc = compute_direction_accuracy_grouped(
             preds_1d, trues_1d, stock_ids_arr, neutral_threshold=0.002
         )
+        if len(sample_dates) != len(preds_1d):
+            raise RuntimeError(
+                f'[{flag_name}] 信号日期数量与预测数量不一致：'
+                f'dates={len(sample_dates)}, preds={len(preds_1d)}。'
+                '请确认 Dataset_MultiStock.data_meta 与 DataLoader 顺序一致。'
+            )
+
         backtest = backtest_strategy_grouped(
             preds_1d, trues_1d, stock_ids_arr,
             signal_threshold=0.005,
@@ -264,7 +278,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             risk_free_rate=0.0,
             trading_days=252,
             pred_horizon=10,
-            decision_interval=10,
+            decision_interval=getattr(test_data, 'window_stride', 10),
+            dates=sample_dates,
         )
 
         print(f'\n===== [{flag_name}] =====')
@@ -279,7 +294,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         return backtest
 
-
     def test(self, setting, test=0):
         test_data, test_loader = self._get_data(flag='test')
         if test:
@@ -291,6 +305,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         preds = []
         trues = []
         stock_ids = []
+        sample_dates = []
+        sample_meta_index = 0
         folder_path = './test_results/' + setting + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
@@ -306,6 +322,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     stock_ids.append(batch_sid.numpy())
                 else:
                     batch_x, batch_y, batch_x_mark, batch_y_mark = batch
+
+                batch_size = int(batch_x.shape[0])
+                if hasattr(test_data, 'data_meta'):
+                    sample_dates.extend(
+                        m['date'] for m in test_data.data_meta[sample_meta_index:sample_meta_index + batch_size])
+                    sample_meta_index += batch_size
 
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
@@ -377,7 +399,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         # 路径2：阈值参数
         SIGNAL_THRESHOLD = 0.005  # 0.5% 的预测收益率才交易
-        COST_PER_TRADE = 0.0025  # 双边 0.25%
+        COST_PER_TRADE = 0.0025  # 一次完整持有周期的往返总成本假设（25 bp）
 
         if stock_ids_arr is not None:
             dir_acc = compute_direction_accuracy_grouped(
@@ -396,6 +418,16 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             print(f'  holding_days       = {PRED_HORIZON}')
             print(f'  cash_days          = {DECISION_INTERVAL - PRED_HORIZON}')
 
+            if len(sample_dates) != len(preds_1d):
+                raise RuntimeError(
+                    '测试集信号日期数量与预测数量不一致：'
+                    f'dates={len(sample_dates)}, preds={len(preds_1d)}。'
+                    '请确认 Dataset_MultiStock.data_meta 与 DataLoader 顺序一致。'
+                )
+            print(f'[Audit] dates={len(sample_dates)}, preds={len(preds_1d)}, '
+                  f'trues={len(trues_1d)}, stock_ids={len(stock_ids_arr)}')
+            print(f'[Audit] 前5个信号日期: {sample_dates[:5]}')
+
             backtest = backtest_strategy_grouped(
                 preds_1d, trues_1d, stock_ids_arr,
                 signal_threshold=SIGNAL_THRESHOLD,
@@ -404,6 +436,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 trading_days=252,
                 pred_horizon=PRED_HORIZON,
                 decision_interval=DECISION_INTERVAL,
+                dates=sample_dates,
             )
         else:
             raise RuntimeError('缺少 stock_ids')
@@ -454,6 +487,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         np.save(f'./results/trues_{self.args.model_id}_{self.args.model}.npy', trues_1d)
         np.save(f'./results/stock_ids_{self.args.model_id}_{self.args.model}.npy',
                 stock_ids_arr)
+        np.save(f'./results/dates_{self.args.model_id}_{self.args.model}.npy',
+                np.asarray(sample_dates, dtype=str))
 
         if hasattr(test_data, 'code_to_id'):
             with open(f'./results/code_to_id_{self.args.model_id}_{self.args.model}.json',
@@ -480,46 +515,105 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         vali_data, vali_loader = self._get_data(flag='val')
         self._evaluate(vali_data, vali_loader, flag_name='val')
 
-        # ---- 市场基准：全多头策略 ----
+        # ---- 等权基准：相同信号日期/股票池/持有期，并扣除相同的往返成本 ----
         print('\n' + '=' * 60)
-        print('市场基准（全多头）')
+        print('市场基准（同日期、同股票池、每周期等权再平衡；成本后）')
         print('=' * 60)
 
         for flag_name in ['val', 'test']:
             ds, dl = self._get_data(flag=flag_name)
             trues_bench = []
+            bench_dates = []
+            meta_index = 0
             self.model.eval()
             with torch.no_grad():
                 for batch in dl:
                     if len(batch) == 5:
                         _, by, _, _, _ = batch
+                    elif len(batch) == 6:
+                        _, by, _, _, _, _ = batch
                     else:
                         _, by, _, _ = batch
+                    batch_size = int(by.shape[0])
+                    if not hasattr(ds, 'data_meta'):
+                        raise RuntimeError('基准计算需要 Dataset_MultiStock.data_meta 中的信号日期。')
+                    bench_dates.extend(
+                        m['date'] for m in ds.data_meta[meta_index:meta_index + batch_size]
+                    )
+                    meta_index += batch_size
                     by_np = by.detach().cpu().numpy()
                     if self.args.inverse:
                         shape = by_np.shape
                         by_np = ds.inverse_transform(
                             by_np.reshape(shape[0] * shape[1], -1)
                         ).reshape(shape)
-                    trues_bench.append(by_np)
+                    trues_bench.append(by_np[:, -1, -1].reshape(-1))
 
-            t1d_bench = np.concatenate(trues_bench)[:, -1, -1].flatten()
-            cum_ret = np.prod(1 + t1d_bench) - 1
-            mean_r = t1d_bench.mean()
-            std_r = t1d_bench.std()
+            t1d_bench = np.concatenate(trues_bench).astype(float)
+            bench_dates = np.asarray(bench_dates, dtype=str)
+            if len(t1d_bench) != len(bench_dates):
+                raise RuntimeError(
+                    f'[{flag_name}] 基准日期与收益数量不一致：'
+                    f'{len(bench_dates)} vs {len(t1d_bench)}'
+                )
 
-            periods_per_year = 252 / 10
-            ann_ret = (1 + mean_r) ** periods_per_year - 1
+            # 先在每个信号日内等权聚合所有可用股票，再按周期复利。
+            # 基准定义为每个决策周期都等权持有整个合格股票池，并在周期末退出，
+            # 因而它是“定期等权再平衡基准”，不是全期不调整的买入持有。
+            date_returns = []
+            for d in sorted(np.unique(bench_dates)):
+                values = t1d_bench[bench_dates == d]
+                values = values[np.isfinite(values)]
+                if len(values):
+                    date_returns.append((d, float(np.mean(values))))
+            gross_returns = np.asarray([r for _, r in date_returns], dtype=float)
+            if len(gross_returns) == 0:
+                raise RuntimeError(f'[{flag_name}] 没有可用于计算基准的有效日期收益。')
+            if np.any(gross_returns <= -1):
+                raise ValueError(f'[{flag_name}] 基准组合毛收益出现 <= -100% 的周期值，无法复利。')
+
+            # 与策略采用同一 COST_PER_TRADE；按一个完整持有周期的往返成本处理。
+            net_returns = gross_returns - COST_PER_TRADE
+            if np.any(net_returns <= -1):
+                raise ValueError(f'[{flag_name}] 扣成本后基准收益出现 <= -100% 的周期值，无法复利。')
+            gross_equity = np.cumprod(1.0 + gross_returns)
+            net_equity = np.cumprod(1.0 + net_returns)
+            gross_cum_ret = float(gross_equity[-1] - 1.0)
+            cum_ret = float(net_equity[-1] - 1.0)
+            periods_per_year = 252 / float(getattr(ds, 'window_stride', 10))
+            ann_ret = float(net_equity[-1] ** (periods_per_year / len(net_returns)) - 1.0) if net_equity[
+                                                                                                  -1] >= 0 else -1.0
+            std_r = float(np.std(net_returns, ddof=1)) if len(net_returns) > 1 else 0.0
             ann_vol = std_r * np.sqrt(periods_per_year)
-            sharpe_bench = ann_ret / ann_vol if ann_vol > 0 else 0
+            sharpe_bench = float(np.mean(net_returns) / std_r * np.sqrt(periods_per_year)) if std_r > 1e-12 else 0.0
 
             print(f'[{flag_name}]')
             print(f'  n_samples = {len(t1d_bench)}')
-            print(f'  累计收益   = {cum_ret:+.4f}')
-            print(f'  平均收益   = {mean_r:.5f}')
-            print(f'  标准差     = {std_r:.5f}')
-            print(f'  年化收益   = {ann_ret:+.4f}')
-            print(f'  年化波动   = {ann_vol:.4f}')
-            print(f'  Sharpe     = {sharpe_bench:+.3f}')
+            print(f'  n_signal_dates = {len(net_returns)}')
+            print(f'  单周期往返成本 = {COST_PER_TRADE:.4%}')
+            print(f'  毛累计收益 = {gross_cum_ret:+.4f}')
+            print(f'  成本后累计收益 = {cum_ret:+.4f}')
+            print(f'  成本后平均周期收益 = {np.mean(net_returns):.5f}')
+            print(f'  成本后年化收益 = {ann_ret:+.4f}')
+            print(f'  成本后年化波动 = {ann_vol:.4f}')
+            print(f'  成本后 Sharpe = {sharpe_bench:+.3f}')
+
+            benchmark_summary = {
+                'benchmark_type': 'periodic_equal_weight_rebalanced',
+                'cost_per_round_trip': float(COST_PER_TRADE),
+                'n_samples': int(len(t1d_bench)),
+                'n_signal_dates': int(len(net_returns)),
+                'gross_cumulative_return': gross_cum_ret,
+                'net_cumulative_return': cum_ret,
+                'net_annual_return': ann_ret,
+                'net_annual_volatility': float(ann_vol),
+                'net_sharpe_ratio': float(sharpe_bench),
+                'decision_interval': int(getattr(ds, 'window_stride', 10)),
+            }
+            os.makedirs('./results', exist_ok=True)
+            benchmark_path = f'./results/benchmark_metrics_{self.args.model_id}_{self.args.model}_{flag_name}.json'
+            with open(benchmark_path, 'w', encoding='utf-8') as f:
+                json.dump(benchmark_summary, f, indent=2, ensure_ascii=False)
+            print(f'基准指标已保存: {benchmark_path}')
 
         return

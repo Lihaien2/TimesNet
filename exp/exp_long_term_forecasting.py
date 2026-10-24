@@ -15,12 +15,19 @@ from utils.augmentation import run_augmentation, run_augmentation_single
 
 warnings.filterwarnings('ignore')
 
+# Keep strategy, validation and benchmark assumptions synchronized.
+DEFAULT_SIGNAL_THRESHOLD = 0.005
+DEFAULT_COST_PER_TRADE = 0.0025  # round-trip cost per fully traded stock slot
+DEFAULT_PRED_HORIZON = 10
+
 
 class Exp_Long_Term_Forecast(Exp_Basic):
     def __init__(self, args):
         self.train_loss_history = []
         self.vali_loss_history = []
         self.financial_metrics = {}
+        # Canonical (signal_date, stock_id) keys for strategy/benchmark parity audits.
+        self._backtest_sample_keys = {}
         super(Exp_Long_Term_Forecast, self).__init__(args)
 
     def _build_model(self):
@@ -103,9 +110,18 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
 
-        for epoch in range(self.args.train_epochs):
+        epochs_requested = int(self.args.train_epochs)
+        patience_requested = int(self.args.patience)
+        if epochs_requested < 1:
+            raise ValueError(f'train_epochs 必须 >= 1，当前为 {epochs_requested}')
+        print(f'[TrainConfig] train_epochs={epochs_requested}, patience={patience_requested}, '
+              f'train_steps={train_steps}, expected_max_updates={epochs_requested * train_steps}')
+        epochs_completed = 0
+        for epoch in range(epochs_requested):
+            epochs_completed = epoch + 1
             iter_count = 0
-            train_loss = []
+            train_loss_sum = 0.0
+            train_loss_elements = 0
 
             self.model.train()
             epoch_time = time.time()
@@ -130,7 +146,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                         loss = criterion(outputs, batch_y)
-                        train_loss.append(loss.item())
+                        n_loss_elements = int(batch_y.numel())
+                        train_loss_sum += loss.item() * n_loss_elements
+                        train_loss_elements += n_loss_elements
                 else:
                     outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
@@ -138,7 +156,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                     loss = criterion(outputs, batch_y)
-                    train_loss.append(loss.item())
+                    n_loss_elements = int(batch_y.numel())
+                    train_loss_sum += loss.item() * n_loss_elements
+                    train_loss_elements += n_loss_elements
 
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
@@ -157,7 +177,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     model_optim.step()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
-            train_loss = np.average(train_loss)
+            train_loss = (train_loss_sum / train_loss_elements
+                          if train_loss_elements else float('inf'))
             vali_loss = self.vali(vali_data, vali_loader, criterion)
             self.train_loss_history.append(train_loss)
             self.vali_loss_history.append(vali_loss)
@@ -171,6 +192,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
+        print(f'[TrainSummary] epochs_completed={epochs_completed}/{epochs_requested}, '
+              f'early_stopped={early_stopping.early_stop}')
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
 
@@ -270,14 +293,27 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 f'dates={len(sample_dates)}, preds={len(preds_1d)}。'
                 '请确认 Dataset_MultiStock.data_meta 与 DataLoader 顺序一致。'
             )
+        if stock_ids_arr is None or len(stock_ids_arr) != len(sample_dates):
+            raise RuntimeError(
+                f'[{flag_name}] stock_ids 与信号日期数量不一致，无法审计股票池。'
+            )
+        strategy_keys = [
+            (str(d)[:10], str(sid))
+            for d, sid in zip(sample_dates, stock_ids_arr)
+        ]
+        if len(set(strategy_keys)) != len(strategy_keys):
+            raise RuntimeError(
+                f'[{flag_name}] 策略数据存在重复的 (signal_date, stock_id) 样本。'
+            )
+        self._backtest_sample_keys[flag_name] = set(strategy_keys)
 
         backtest = backtest_strategy_grouped(
             preds_1d, trues_1d, stock_ids_arr,
-            signal_threshold=0.005,
-            cost_per_trade=0.0025,
+            signal_threshold=DEFAULT_SIGNAL_THRESHOLD,
+            cost_per_trade=DEFAULT_COST_PER_TRADE,
             risk_free_rate=0.0,
             trading_days=252,
-            pred_horizon=10,
+            pred_horizon=DEFAULT_PRED_HORIZON,
             decision_interval=getattr(test_data, 'window_stride', 10),
             dates=sample_dates,
         )
@@ -398,8 +434,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         trues_1d = trues[:, -1, -1].flatten()
 
         # 路径2：阈值参数
-        SIGNAL_THRESHOLD = 0.005  # 0.5% 的预测收益率才交易
-        COST_PER_TRADE = 0.0025  # 一次完整持有周期的往返总成本假设（25 bp）
+        SIGNAL_THRESHOLD = DEFAULT_SIGNAL_THRESHOLD  # 0.5% 的预测收益率才交易
+        COST_PER_TRADE = DEFAULT_COST_PER_TRADE  # 一次完整持有周期的往返总成本假设（25 bp）
 
         if stock_ids_arr is not None:
             dir_acc = compute_direction_accuracy_grouped(
@@ -407,7 +443,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 neutral_threshold=0.002
             )
             # ---- 从数据集中读取 stride ----
-            PRED_HORIZON = 10  # ★ 与 fetch_sse50.py 的 shift(-N) 一致
+            PRED_HORIZON = DEFAULT_PRED_HORIZON  # 与标签定义保持一致
             DECISION_INTERVAL = getattr(test_data, 'window_stride', 10)  # 从 Dataset 读取
 
             # 打印配置，便于核对
@@ -424,6 +460,15 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     f'dates={len(sample_dates)}, preds={len(preds_1d)}。'
                     '请确认 Dataset_MultiStock.data_meta 与 DataLoader 顺序一致。'
                 )
+            if len(stock_ids_arr) != len(sample_dates):
+                raise RuntimeError('测试集 stock_ids 与信号日期数量不一致。')
+            strategy_keys = [
+                (str(d)[:10], str(sid))
+                for d, sid in zip(sample_dates, stock_ids_arr)
+            ]
+            if len(set(strategy_keys)) != len(strategy_keys):
+                raise RuntimeError('测试集策略数据存在重复的 (signal_date, stock_id) 样本。')
+            self._backtest_sample_keys['test'] = set(strategy_keys)
             print(f'[Audit] dates={len(sample_dates)}, preds={len(preds_1d)}, '
                   f'trues={len(trues_1d)}, stock_ids={len(stock_ids_arr)}')
             print(f'[Audit] 前5个信号日期: {sample_dates[:5]}')
@@ -517,28 +562,34 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         # ---- 等权基准：相同信号日期/股票池/持有期，并扣除相同的往返成本 ----
         print('\n' + '=' * 60)
-        print('市场基准（同日期、同股票池、每周期等权再平衡；成本后）')
+        print('历史合格股票池等权再平衡基准（同日期/同股票样本；成本后；非上证50指数）')
         print('=' * 60)
 
         for flag_name in ['val', 'test']:
             ds, dl = self._get_data(flag=flag_name)
             trues_bench = []
             bench_dates = []
+            bench_stock_ids = []
             meta_index = 0
             self.model.eval()
             with torch.no_grad():
                 for batch in dl:
                     if len(batch) == 5:
-                        _, by, _, _, _ = batch
+                        _, by, _, _, bench_sid = batch
                     elif len(batch) == 6:
-                        _, by, _, _, _, _ = batch
+                        _, by, _, _, bench_sid, _ = batch
                     else:
-                        _, by, _, _ = batch
+                        raise RuntimeError(
+                            '基准审计要求 multi_stock batch 提供 stock_id，实际 batch 未包含 stock_id。'
+                        )
                     batch_size = int(by.shape[0])
                     if not hasattr(ds, 'data_meta'):
                         raise RuntimeError('基准计算需要 Dataset_MultiStock.data_meta 中的信号日期。')
                     bench_dates.extend(
                         m['date'] for m in ds.data_meta[meta_index:meta_index + batch_size]
+                    )
+                    bench_stock_ids.extend(
+                        bench_sid.detach().cpu().numpy().reshape(-1).tolist()
                     )
                     meta_index += batch_size
                     by_np = by.detach().cpu().numpy()
@@ -556,6 +607,37 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     f'[{flag_name}] 基准日期与收益数量不一致：'
                     f'{len(bench_dates)} vs {len(t1d_bench)}'
                 )
+            if len(t1d_bench) != len(bench_stock_ids):
+                raise RuntimeError(
+                    f'[{flag_name}] 基准 stock_id 与收益数量不一致：'
+                    f'{len(bench_stock_ids)} vs {len(t1d_bench)}'
+                )
+
+            benchmark_keys = [
+                (str(d)[:10], str(sid))
+                for d, sid in zip(bench_dates, bench_stock_ids)
+            ]
+            if len(set(benchmark_keys)) != len(benchmark_keys):
+                raise RuntimeError(
+                    f'[{flag_name}] 基准数据存在重复的 (signal_date, stock_id) 样本。'
+                )
+            strategy_keys = self._backtest_sample_keys.get(flag_name)
+            if strategy_keys is None:
+                raise RuntimeError(
+                    f'[{flag_name}] 未找到策略样本清单，无法验证基准股票池一致性。'
+                )
+            benchmark_key_set = set(benchmark_keys)
+            if benchmark_key_set != strategy_keys:
+                missing_from_benchmark = len(strategy_keys - benchmark_key_set)
+                extra_in_benchmark = len(benchmark_key_set - strategy_keys)
+                raise RuntimeError(
+                    f'[{flag_name}] 策略与基准的 (signal_date, stock_id) 集合不同：'
+                    f'策略独有={missing_from_benchmark}, 基准独有={extra_in_benchmark}。'
+                )
+            print(
+                f'[Audit] [{flag_name}] 策略/基准样本清单完全一致：'
+                f'{len(benchmark_key_set)} 个 (日期,股票) 组合项'
+            )
 
             # 先在每个信号日内等权聚合所有可用股票，再按周期复利。
             # 基准定义为每个决策周期都等权持有整个合格股票池，并在周期末退出，
@@ -599,7 +681,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
             print(f'  成本后 Sharpe = {sharpe_bench:+.3f}')
 
             benchmark_summary = {
-                'benchmark_type': 'periodic_equal_weight_rebalanced',
+                'benchmark_type': 'periodic_equal_weight_rebalanced_stock_pool',
+                'benchmark_is_official_sse50_index': False,
                 'cost_per_round_trip': float(COST_PER_TRADE),
                 'n_samples': int(len(t1d_bench)),
                 'n_signal_dates': int(len(net_returns)),

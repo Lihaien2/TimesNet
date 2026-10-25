@@ -924,31 +924,70 @@ class Dataset_MultiStock(Dataset):
         dates = pd.Index(sorted(df['date'].unique()))
         if len(dates) < 3:
             raise ValueError('有效交易日期不足，无法进行时间切分。')
-        train_i = max(1, min(len(dates) - 2, int(len(dates) * self.train_ratio)))
-        val_i = max(train_i + 1, min(len(dates) - 1, int(len(dates) * (self.train_ratio + self.vali_ratio))))
-        self.train_cut, self.val_cut = dates[train_i], dates[val_i]
-        # 关键：dates[-1] 是最后一个可预测信号日，通常比真实数据末日早一个预测周期。
-        # 测试集标签的边界必须依据目标覆盖的最晚日期，而不是最后一个信号日。
+        # 固定按预测目标结束日期切分，边界均包含当天：
+        # train: target_end_date <= 2024-01-31
+        # val:   2024-01-31 < target_end_date <= 2024-08-31
+        # test:  2024-08-31 < target_end_date <= 2025-12-31
+        self.train_end = pd.Timestamp('2024-01-31')
+        self.val_end = pd.Timestamp('2024-08-31')
+        self.test_end = pd.Timestamp('2025-12-31')
         self.max_signal_date = pd.Timestamp(dates[-1])
-        self.max_date = max(pd.Timestamp(df['date'].max()), pd.Timestamp(df['target_end_date'].max()))
+        self.max_date = pd.Timestamp(self.test_end)
         print(
-            f'[Dataset] 全局时间边界 train<{self.train_cut.date()}, val<{self.val_cut.date()}, test≤{self.max_date.date()}')
+            f'[Dataset] 按目标结束日期切分: train≤{self.train_end.date()}, '
+            f'val({self.train_end.date()}, {self.val_end.date()}], '
+            f'test({self.val_end.date()}, {self.test_end.date()}]'
+        )
+        if df['target_end_date'].min() > self.train_end:
+            raise ValueError('数据中没有落在训练目标结束日期范围内的记录。')
 
         # 统一的组合决策日期：基于全局交易日历，而不是每只股票各自的行号。
         # seq_len-1 保证决策日之前至少有 seq_len 个全局观测日期；单只股票仍需有足够历史行。
         self.decision_dates = pd.Index(dates[self.seq_len - 1::self.window_stride])
         self.decision_date_set = set(pd.Timestamp(d) for d in self.decision_dates)
 
-        # 目标标准化统计量只使用标签结束日也在训练区间内的样本，避免边界标签进入统计量。
-        train_rows = df[(df['date'] < self.train_cut) & (df['target_end_date'] < self.train_cut)]
+        # 特征 scaler 仅使用训练时间区间内、标签未越过训练边界的原始记录拟合。
+        # target scaler 则必须与模型实际看到的训练标签完全一致：同时应用
+        # seq_len、全局 decision_dates/window_stride、标签结束日边界和 is_eligible 过滤。
+        train_rows = df[df['target_end_date'] <= self.train_end]
         self.scaler = StandardScaler()
         if self.scale:
             if train_rows.empty:
                 raise ValueError('训练时间段没有可用且标签结束于训练边界前的样本，无法拟合 scaler。')
             self.scaler.fit(train_rows[self.scale_cols].astype(float).values)
-            t = train_rows[self.target].astype(float).values
+
+            actual_train_targets = []
+            for _, train_g in df.groupby(self.stock_code_col, sort=False):
+                train_g = train_g.sort_values('date').reset_index(drop=True)
+                if len(train_g) < self.seq_len:
+                    continue
+                train_dates = train_g['date'].values
+                train_ends = train_g['target_end_date'].values
+                train_y = train_g[self.target].astype(float).values
+                for train_i in range(self.seq_len - 1, len(train_g)):
+                    signal_date = pd.Timestamp(train_dates[train_i])
+                    if signal_date not in self.decision_date_set:
+                        continue
+                    if not (pd.Timestamp(train_ends[train_i]) <= self.train_end):
+                        continue
+                    if 'is_eligible' in train_g.columns:
+                        eligible_value = train_g.loc[train_i, 'is_eligible']
+                        if isinstance(eligible_value, str):
+                            eligible = eligible_value.strip().lower() in ('true', '1', 'yes', 'y')
+                        else:
+                            eligible = bool(eligible_value) if pd.notna(eligible_value) else False
+                        if not eligible:
+                            continue
+                    actual_train_targets.append(train_y[train_i])
+
+            if not actual_train_targets:
+                raise ValueError('按实际训练样本筛选后没有可用 target，无法拟合 target scaler。')
+            t = np.asarray(actual_train_targets, dtype=np.float64)
             self.target_mean = float(np.mean(t))
-            self.target_std = float(np.std(t)) + 1e-8
+            target_std = float(np.std(t, ddof=0))
+            self.target_std = target_std if target_std > 0 else 1.0
+            print(
+                f'[Dataset] target scaler fitted on actual train labels: n={len(t)}, mean={self.target_mean:.8f}, std={self.target_std:.8f}')
         else:
             self.target_mean, self.target_std = None, None
 
@@ -978,11 +1017,11 @@ class Dataset_MultiStock(Dataset):
                     continue
                 target_end = pd.Timestamp(ends_stock[i])
                 if self.set_type == 0:
-                    keep = signal_date < self.train_cut and target_end < self.train_cut
+                    keep = target_end <= self.train_end
                 elif self.set_type == 1:
-                    keep = self.train_cut <= signal_date < self.val_cut and target_end < self.val_cut
+                    keep = self.train_end < target_end <= self.val_end
                 else:
-                    keep = self.val_cut <= signal_date <= self.max_date and target_end <= self.max_date
+                    keep = self.val_end < target_end <= self.test_end
                 if not keep:
                     continue
                 # 若存在资格字段，训练/验证/测试样本都只取信号日可交易成分股。
@@ -1028,22 +1067,17 @@ class Dataset_MultiStock(Dataset):
                 (_audit['target_start_date'] > _audit['date'])
                 & (_audit['target_end_date'] >= _audit['target_start_date'])
         )
-        if self.set_type == 0:  # train: 信号日和标签结束日都必须早于 train_cut
+        if self.set_type == 0:  # train: 目标结束日期截至 2024-01-31（含）
+            _valid = _audit['target_end_date'] <= self.train_end
+        elif self.set_type == 1:  # val: 目标结束日期在 2024-01-31 之后、2024-08-31（含）
             _valid = (
-                    (_audit['date'] < self.train_cut)
-                    & (_audit['target_end_date'] < self.train_cut)
+                    (_audit['target_end_date'] > self.train_end)
+                    & (_audit['target_end_date'] <= self.val_end)
             )
-        elif self.set_type == 1:  # val: 信号日位于 train_cut 到 val_cut，标签不能越过 val_cut
+        else:  # test: 目标结束日期在 2024-08-31 之后、2025-12-31（含）
             _valid = (
-                    (_audit['date'] >= self.train_cut)
-                    & (_audit['date'] < self.val_cut)
-                    & (_audit['target_end_date'] < self.val_cut)
-            )
-        else:  # test: 信号日从 val_cut 起，标签结束日不能超过数据最后日期
-            _valid = (
-                    (_audit['date'] >= self.val_cut)
-                    & (_audit['date'] <= self.max_date)
-                    & (_audit['target_end_date'] <= self.max_date)
+                    (_audit['target_end_date'] > self.val_end)
+                    & (_audit['target_end_date'] <= self.test_end)
             )
 
         _valid = _valid & _valid_target_dates
